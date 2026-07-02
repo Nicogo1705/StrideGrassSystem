@@ -3,7 +3,7 @@
   "id": "com.nicogo.grass",
   "name": "Stride GPU Grass System",
   "authors": [{ "name": "Nicogo", "url": "https://github.com/Nicogo1705" }],
-  "description": "GPU-driven grass: a single compute dispatch builds and LOD-culls hundreds of thousands of animated blades from a list of seed points. Procedural blade shading (no textures), world-space wind, and a scrolling trample field that flattens a trail under the player. Fully decoupled from any terrain.",
+  "description": "GPU-driven grass: one compute dispatch builds and LOD-culls hundreds of thousands of animated blades from seed points. Procedural shading (no textures), world-space wind, and a scrolling trample field that flattens a trail under the player. Decoupled from any terrain.",
   "category": "Shaders",
   "tags": ["grass", "foliage", "vegetation", "gpu", "compute-shader", "instancing", "wind", "sdsl"],
   "license": "MIT",
