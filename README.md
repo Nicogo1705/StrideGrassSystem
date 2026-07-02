@@ -9,8 +9,6 @@ It is **fully decoupled from any terrain**: you decide where the grass grows by
 handing it seeds. Scatter them over a flat area, sample a heightmap, raycast onto
 colliders, or read a voxel surface — the renderer doesn't care.
 
-![screenshot](thumbnail.png)
-
 ## What's in the box
 
 | File | Role |
