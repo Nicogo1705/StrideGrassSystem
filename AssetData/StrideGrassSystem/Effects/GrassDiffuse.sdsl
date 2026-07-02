@@ -1,0 +1,56 @@
+// Procedural grass blade diffuse: color gradient, midrib, edge darkening, blade shape alpha.
+// Minimal dependencies — only Texturing for UV access. No texture assets required.
+
+shader GrassDiffuse : ComputeColor, Texturing
+{
+    cbuffer PerMaterial
+    {
+        // Driven by GrassRenderer.SetColorScale: 1.0 = day, ~0.2 = full night.
+        // Multiplies the procedural color (RGB only, alpha preserved) so the
+        // grass actually darkens at night instead of staying vivid green just
+        // because the emissive feeds the color back in unaffected.
+        stage float GrassColorScale;
+    }
+
+    override float4 Compute()
+    {
+        float2 uv = streams.TexCoord;
+        float height = 1.0 - uv.y; // 0 at base, 1 at tip
+        float cx = uv.x - 0.5;     // centered X: -0.5 to 0.5
+
+        // Base-to-tip color gradient (darker at base, lighter at tip)
+        float3 baseCol = float3(0.05, 0.18, 0.02);
+        float3 midCol  = float3(0.12, 0.35, 0.06);
+        float3 tipCol  = float3(0.35, 0.55, 0.15);
+        float3 color = lerp(baseCol, midCol, smoothstep(0.0, 0.4, height));
+        color = lerp(color, tipCol, smoothstep(0.3, 1.0, height));
+
+        // Ground shadow at base (ambient occlusion fake)
+        color *= lerp(0.4, 1.0, smoothstep(0.0, 0.25, height));
+
+        // Central midrib: subtle lighter stripe down the middle
+        float midrib = 1.0 + 0.15 * exp(-abs(cx) * 20.0) * (1.0 - height * 0.5);
+        color *= midrib;
+
+        // Edge darkening: sides of the blade are slightly darker
+        float edgeDark = lerp(0.8, 1.0, 1.0 - abs(cx) * 2.0);
+        color *= edgeDark;
+
+        // Subsurface-like brightening at tip (light passes through thin blade)
+        color += float3(0.06, 0.08, 0.02) * smoothstep(0.7, 1.0, height);
+
+        // Blade shape: narrow at base, tapers to pointed tip
+        float halfWidth = 0.28 * (1.0 - height * height);
+        float dist = abs(cx);
+        float alpha = 1.0 - smoothstep(halfWidth - 0.03, halfWidth, dist);
+
+        // Pointed tip fade
+        alpha *= smoothstep(0.0, 0.05, 1.0 - height);
+
+        // Apply day/night color scale on RGB only — alpha keeps the blade
+        // shape so darkening doesn't make the grass disappear.
+        color *= GrassColorScale;
+
+        return float4(color, alpha);
+    }
+};

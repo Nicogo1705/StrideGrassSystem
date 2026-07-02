@@ -1,0 +1,80 @@
+// Trample field update — one thread per texel.
+//
+// The trample field is an R8 (float in shader) texture that scrolls with the
+// player. Each texel stores the "trample amount" at a world-space (X, Z) point
+// in [OriginWorld, OriginWorld + Size*TexelSize)². Sources (player, enemies,
+// other coop players) are uploaded each frame in a structured buffer; each
+// thread:
+//   1. Decays the texel toward 0 (grass straightens back up).
+//   2. Checks every source for proximity; if close enough, writes a fresh
+//      stamp (max of decayed and source falloff).
+//
+// Storage uses modulo addressing so the texture can scroll without copying:
+//   logical_id = ((storage_id - Offset) % N + N) % N
+//   world_xz   = OriginWorld + logical_id * TexelSize
+//
+// When the player moves and Offset changes, no data is copied — the new edge
+// texels still hold stale data for one frame, but decay erases it quickly so
+// it's invisible in practice.
+
+shader GrassTrampleUpdate : ComputeShaderBase
+{
+    struct TrampleSource
+    {
+        float3 Position;
+        float  Radius;
+    };
+
+    // ── I/O ────────────────────────────────────────────────────────────────
+    stage RWTexture2D<float>              Field;
+    stage StructuredBuffer<TrampleSource> Sources;
+
+    // ── Uniforms ───────────────────────────────────────────────────────────
+    stage int    SourceCount;
+    stage float  DecayPerFrame;        // amount subtracted each frame (0..1)
+    stage float2 OriginWorld;          // world (X, Z) of logical_id (0, 0)
+    stage float  TexelWorldSize;       // metres per texel
+    stage uint   TextureSize;          // N (texture is N x N)
+    stage int2   Offset;               // texel rotation for scroll preservation
+
+    override void Compute()
+    {
+        uint2 storageId = streams.DispatchThreadId.xy;
+        if (storageId.x >= TextureSize || storageId.y >= TextureSize) return;
+
+        // Storage → logical via modulo. `% int` in HLSL is C-style for signed,
+        // so we add TextureSize before taking the mod to keep it non-negative.
+        int N      = (int)TextureSize;
+        int lx     = ((int)storageId.x - Offset.x) % N;
+        int lz     = ((int)storageId.y - Offset.y) % N;
+        if (lx < 0) lx += N;
+        if (lz < 0) lz += N;
+
+        // World position of this texel's logical coord.
+        float2 worldXZ = OriginWorld + float2((float)lx, (float)lz) * TexelWorldSize;
+
+        // Decay current value.
+        float current = Field[storageId];
+        float decayed = max(current - DecayPerFrame, 0.0);
+
+        // Sample all sources, keep the strongest stamp.
+        float fresh = 0.0;
+        for (int i = 0; i < SourceCount; i++)
+        {
+            TrampleSource src = Sources[i];
+            float dx = worldXZ.x - src.Position.x;
+            float dz = worldXZ.y - src.Position.z;
+            float distSq = dx * dx + dz * dz;
+            float r = max(src.Radius, 0.01);
+            float rSq = r * r;
+            if (distSq < rSq)
+            {
+                // Linear falloff: 1.0 at center, 0.0 at the edge.
+                float falloff = 1.0 - sqrt(distSq) / r;
+                fresh = max(fresh, falloff);
+            }
+        }
+
+        Field[storageId] = max(decayed, fresh);
+    }
+};

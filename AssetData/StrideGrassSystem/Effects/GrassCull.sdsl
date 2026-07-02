@@ -1,0 +1,196 @@
+// Compute shader: per-frame grass blade matrix generation + LOD culling.
+//
+// The CPU owns a static list of "seeds" (one per grass cell) uploaded into
+// Seeds. Each frame we dispatch one thread per seed; each thread emits up to
+// MaxBladesPerCell sub-blade matrices into OutWorld.
+//
+// Sub-blades beyond the current LOD count get a degenerate (all-zero) matrix
+// so the rasterizer culls them cheaply — no need for indirect draw, the
+// InstancingUserBuffer just always renders SeedCount × MaxBladesPerCell.
+
+shader GrassCull : ComputeShaderBase
+{
+    // ── Seed struct (16 bytes, matches C# GrassSeed) ───────────────────────
+    struct GrassSeed
+    {
+        float3 RootPosition;
+        uint   CellHash;
+    };
+
+    // Match Stride's TransformationInstancing.InstanceTransform layout exactly
+    // so the output buffer is bit-identical to what the instancing render
+    // feature expects. Writing directly to RWStructuredBuffer<float4x4>
+    // crashed the SPIR-V optimizer (matrix-as-element type tripped the
+    // lowering pass) — wrapping in a struct sidesteps that.
+    struct InstanceTransform
+    {
+        float4x4 Matrix;
+    };
+
+    // ── Inputs ─────────────────────────────────────────────────────────────
+    stage StructuredBuffer<GrassSeed> Seeds;
+    stage int   SeedCount;
+    stage int   MaxBladesPerCell;
+
+    // ── Outputs ────────────────────────────────────────────────────────────
+    stage RWStructuredBuffer<InstanceTransform> OutWorld;
+
+    // ── Per-frame parameters ───────────────────────────────────────────────
+    stage float3 CameraPos;                // XYZ world camera (only XZ used)
+    stage float  GrassRadius;
+    stage float  GrassRadiusSq;
+    stage float  FadeStart;
+    stage float  FadeStartSq;
+    stage float  FadeRange;
+    stage float  BaseBladesPerCell;        // float-form constant (CPU sends as float)
+    stage float  LodMultiplier;
+    stage float  LodExponent;
+
+    // ── Trample (grass crushed under players / enemies) ─────────────────────
+    // Trample field: an R8 texture sampled by world (X, Z). Each texel stores
+    // "trample amount" in [0, 1] — 0 = blade upright, 1 = fully crushed. The
+    // field decays over time so trails persist for a few seconds then recover.
+    // Modulo addressing follows the player so the texture scrolls without
+    // copying memory.
+    stage Texture2D<float> TrampleField;
+    stage SamplerState     TrampleSampler;
+    stage float2 TrampleOriginWorld;   // world (X, Z) of logical_id (0, 0)
+    stage float  TrampleTexelSize;     // metres per texel
+    stage uint   TrampleTextureSize;   // N (texture is N x N)
+    stage int2   TrampleOffset;        // texel rotation for scroll preservation
+
+    // ── Helpers ────────────────────────────────────────────────────────────
+
+    // Same WangHash as the CPU version — keeps per-cell determinism
+    // identical between CPU baking and GPU sub-blade rolls.
+    stage uint WangHash(uint x)
+    {
+        x = (x ^ 61) ^ (x >> 16);
+        x *= 9;
+        x ^= x >> 4;
+        x *= 0x27d4eb2d;
+        x ^= x >> 15;
+        return x;
+    }
+
+    // RNG jitter + rotation + fade ring + LOD blade count. Out-of-range and
+    // above-LOD sub-blades get a zero matrix (degenerate, GPU-culled).
+    override void Compute()
+    {
+        uint seedIndex = streams.DispatchThreadId.x;
+        if (seedIndex >= (uint)SeedCount) return;
+
+        GrassSeed seed = Seeds[seedIndex];
+        float wx = seed.RootPosition.x;
+        float wy = seed.RootPosition.y;
+        float wz = seed.RootPosition.z;
+
+        // Distance to camera (XZ only).
+        float cdx = wx - CameraPos.x;
+        float cdz = wz - CameraPos.z;
+        float distSq = cdx * cdx + cdz * cdz;
+        float dist   = sqrt(distSq);
+
+        // Fade factor at the outer ring.
+        float ft         = max(dist - FadeStart, 0.0) / FadeRange;
+        float fadeFactor = saturate(1.0 - ft * ft);
+
+        // LOD blade count. Use (1 - distRatio)^LodExponent rather than
+        // 1 - distRatio^LodExponent: the former gives a smooth, gradually
+        // accelerating decay across the whole range. Use exp2/log2 form of
+        // pow() since pow() with a non-constant exponent tripped the SPIR-V
+        // optimizer in earlier attempts.
+        float distRatio = saturate(dist / GrassRadius);
+        float invRatio  = max(1.0 - distRatio, 1.0 / 65536.0);  // log2(0) = -inf
+        float lodFactor = exp2(LodExponent * log2(invRatio));
+        float fBladeCount = BaseBladesPerCell * LodMultiplier * lodFactor + 0.5;
+
+        // Zero out everything when fully out of range (distSq > radiusSq).
+        float inRange = (distSq <= GrassRadiusSq) ? 1.0 : 0.0;
+
+        uint rng = seed.CellHash;
+        uint outBase = seedIndex * (uint)MaxBladesPerCell;
+
+        for (int b = 0; b < MaxBladesPerCell; b++)
+        {
+            rng = WangHash(rng + (uint)b);
+            float bx = wx + (rng & 0xFFFF) * (1.0 / 65535.0);
+            rng = WangHash(rng);
+            float bz = wz + (rng & 0xFFFF) * (1.0 / 65535.0);
+            rng = WangHash(rng);
+            float rndScale = (rng & 0xFFFF) * (1.0 / 65535.0);
+            rng = WangHash(rng);
+            float rndAngle = (rng & 0xFFFF) * (1.0 / 65535.0);
+
+            // Per-sub-blade LOD mask: 1 if this sub-blade is within the
+            // current bladeCount, 0 otherwise. step() chosen over the ternary
+            // form because the ternary inside the loop crashed the SPIR-V
+            // optimizer in an earlier iteration.
+            float lodMask = step((float)b + 0.5, fBladeCount);
+            float mask    = inRange * lodMask;
+
+            float baseScale = (0.6 + rndScale * 0.5) * fadeFactor;
+            float sx = baseScale * 0.3;
+            float sy = baseScale * 0.55;
+            float sz = baseScale * 0.3;
+            float angle = rndAngle * 3.14159265;
+            float cosA = cos(angle);
+            float sinA = sin(angle);
+
+            // ── Trample: sample the trample field at this blade's XZ.
+            // trampleAmount in [0, 1]; 0 = upright, 1 = fully crushed.
+            // The lean direction is derived from the gradient of the field
+            // (cheap finite differences on neighbouring texels) so blades
+            // fall AWAY from the densest trampling source naturally.
+            float fN = (float)TrampleTextureSize;
+            float2 logicalUv = (float2(bx, bz) - TrampleOriginWorld) / TrampleTexelSize;
+            // Mask: 1 inside the field window, 0 outside. Without this, blades
+            // far from the player get aliased to texel data via modulo wrap
+            // and the trample pattern repeats every N×texelSize world units.
+            float inWindow = step(0.0, logicalUv.x) * step(logicalUv.x, fN)
+                           * step(0.0, logicalUv.y) * step(logicalUv.y, fN);
+            // Storage uv = (logical + offset) wrapped into [0, N). Sampler is
+            // in Wrap mode so the wrap is correct for the storage rotation; we
+            // just need the inWindow mask above to silence aliased samples.
+            float2 storageUv = logicalUv + float2((float)TrampleOffset.x, (float)TrampleOffset.y);
+            float2 sampleUv  = (storageUv + 0.5) / fN;   // sampler does the wrap
+            float trampleAmount = TrampleField.SampleLevel(TrampleSampler, sampleUv, 0) * inWindow;
+            // 1 = upright, 0 = fully crushed.
+            float trampleT  = 1.0 - saturate(trampleAmount);
+            // Approximate gradient via two extra taps for the lean direction.
+            // Multiply by inWindow so out-of-range blades get a zero gradient.
+            float dxStep = 1.0 / fN;
+            float gx = (TrampleField.SampleLevel(TrampleSampler, sampleUv + float2(dxStep, 0), 0)
+                     -  TrampleField.SampleLevel(TrampleSampler, sampleUv - float2(dxStep, 0), 0)) * inWindow;
+            float gz = (TrampleField.SampleLevel(TrampleSampler, sampleUv + float2(0, dxStep), 0)
+                     -  TrampleField.SampleLevel(TrampleSampler, sampleUv - float2(0, dxStep), 0)) * inWindow;
+            // Lean OPPOSITE the gradient (gradient points uphill in trample, we
+            // want the blade to fall downhill / away from the source).
+            float gLen = sqrt(gx * gx + gz * gz) + 1e-5;
+            float leanX = -gx / gLen;
+            float leanZ = -gz / gLen;
+            // Y scale crushed (min 25%), lateral fattened a bit so the blade
+            // looks splayed not just short. Tilt up to ~52° fully trampled.
+            float crushY  = 0.25 + 0.75 * trampleT;
+            float splayXZ = 1.0 + (1.0 - trampleT) * 0.4;
+            sy *= crushY;
+            sx *= splayXZ;
+            sz *= splayXZ;
+            float tiltAngle = (1.0 - trampleT) * 0.9;
+            float tiltCos   = cos(tiltAngle);
+            float tiltSin   = sin(tiltAngle);
+
+            // Build the matrix. The Y axis (m[1]) is tilted toward
+            // (leanX, leanZ) so the blade leans away from the player.
+            float4x4 m;
+            m[0] = float4(sx * cosA  * mask,                 0,                       sx * sinA * mask,                 0);
+            m[1] = float4(leanX * sy * tiltSin * mask,       sy * tiltCos * mask,     leanZ * sy * tiltSin * mask,      0);
+            m[2] = float4(-sz * sinA * mask,                 0,                       sz * cosA * mask,                 0);
+            m[3] = float4(bx * mask,                         wy * mask,               bz * mask,                        mask);
+
+            InstanceTransform t;
+            t.Matrix = m;
+            OutWorld[outBase + (uint)b] = t;
+        }
+    }
+};

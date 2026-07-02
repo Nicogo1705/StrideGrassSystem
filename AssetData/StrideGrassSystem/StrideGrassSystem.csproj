@@ -1,0 +1,28 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <RootNamespace>StrideGrassSystem</RootNamespace>
+    <AssemblyName>StrideGrassSystem</AssemblyName>
+  </PropertyGroup>
+  <!-- Reusable library: GPU-driven grass renderer + its SDSL shaders. No game content. -->
+  <ItemGroup>
+    <PackageReference Include="Stride.Engine" Version="4.4.0.2" />
+    <PackageReference Include="Stride.Core.Assets.CompilerApp" Version="4.4.0.2" IncludeAssets="build;buildTransitive" />
+  </ItemGroup>
+  <!--
+    Stride 4.4 ships a build-time Roslyn source generator that can reject compute shaders using
+    the classic `stage`/`cbuffer` syntax. Remove the .sdsl files from @(AdditionalFiles) just
+    before CoreCompile so the C# build succeeds. The shaders are still compiled by the Stride
+    asset pipeline at asset-compile/runtime, and GrassRenderer binds every shader parameter by
+    string name (ParameterKeys.NewValue/NewObject) so no generated *Keys class is required.
+  -->
+  <Target Name="DisableSdslSourceGeneratorForGrassShaders" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <AdditionalFiles Remove="Effects\GrassCull.sdsl" />
+      <AdditionalFiles Remove="Effects\GrassDiffuse.sdsl" />
+      <AdditionalFiles Remove="Effects\GrassWind.sdsl" />
+      <AdditionalFiles Remove="Effects\GrassTrampleUpdate.sdsl" />
+    </ItemGroup>
+  </Target>
+</Project>
