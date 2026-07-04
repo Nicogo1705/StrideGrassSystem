@@ -17,7 +17,7 @@ colliders, or read a voxel surface — the renderer doesn't care.
 | `GrassField` | Drop-in `SyncScript`. Attach it to an entity, tweak the knobs in Game Studio, press play. |
 | `GrassScatter` | CPU helpers that turn a surface into `GrassSeed[]` (flat area or via a height sampler). |
 | `GrassSeed` | The 16-byte struct the renderer consumes: a root position + a variation hash. |
-| `Effects/*.sdsl` | `GrassCull` (build + LOD), `GrassTrampleUpdate` (trample field), `GrassDiffuse` (blade color), `GrassWind` (sway). |
+| `Effects/*.sdsl` | `GrassCull` (build + LOD + wind sway + trample lean), `GrassTrampleUpdate` (trample field), `GrassDiffuse` (blade color). |
 
 ## Quick start (drop-in)
 
@@ -64,6 +64,23 @@ _grass.Update(cameraPos, (Game)Game);
 - **No textures.** Blade color, midrib, edge shading and the pointed alpha shape
   are all procedural in `GrassDiffuse`, so the asset ships without any image
   dependencies. `SetColorScale` dims it for day/night.
+
+## Performance
+
+Measured on the demo scene (`Demo.Windows`, Release, 1080p, vsync off, `GrassDistance` 130,
+RTX 4090): a fixed grass-filled view, 15 s average after warmup. One compute dispatch per
+frame regardless of blade count — the CPU only ever uploads seeds once, so the cost is
+almost entirely GPU-side.
+
+| Seeds | Blade instances (× 32) | Avg FPS |
+|---|---|---|
+| 40 000 (100×100 m) | 1.28 M | **315** |
+| 90 000 (150×150 m) | 2.88 M | **76** |
+| 160 000 (200×200 m) | 5.12 M | 15 |
+
+The intended pattern for big worlds is **streaming**: keep seeds near the camera with
+`SetChunkSeeds`/`RemoveChunk` instead of feeding the whole map at once — instances scale
+with what's in range, not with the world size.
 
 ## Demo
 
