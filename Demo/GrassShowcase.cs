@@ -43,13 +43,33 @@ public sealed class GrassShowcase : SyncScript
 
     public override void Start()
     {
+        // Benchmark overrides (see Demo.Windows/Program.cs GRASS_BENCH mode) — inert otherwise.
+        if (float.TryParse(Environment.GetEnvironmentVariable("GRASS_AREA"), out var areaOverride))
+        {
+            AreaSize = areaOverride;
+        }
+
+        if (float.TryParse(Environment.GetEnvironmentVariable("GRASS_CELL"), out var cellOverride))
+        {
+            CellSize = cellOverride;
+        }
+
         BuildGround();
         BuildBall();
 
-        _grass = new GrassRenderer(Services, GraphicsDevice, 1_500_000);
+        // Bench override: the instance buffer must cover seeds × 32 sub-blades, or only a
+        // stripe of a big field gets grass (the buffer fills in seed order).
+        var maxInstances = 1_500_000;
+        if (int.TryParse(Environment.GetEnvironmentVariable("GRASS_MAXINSTANCES"), out var maxOverride))
+        {
+            maxInstances = maxOverride;
+        }
+
+        _grass = new GrassRenderer(Services, GraphicsDevice, maxInstances);
         _grass.SetGrassDistance(GrassDistance);
         _grass.SetLodParams(1.2f, 1.5f);
         _grass.SetColorScale(0.85f); // slightly tone down the vivid green
+        _grass.SetWind(0.2f, 1.6f, 0.8f); // a touch above the defaults — visible breeze, not a storm
 
         var origin = Entity.Transform.WorldMatrix.TranslationVector;
         var seeds = GrassScatter.OverArea(origin, AreaSize, AreaSize, CellSize, (x, z) => Height(x, z));
