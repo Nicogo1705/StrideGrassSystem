@@ -88,9 +88,10 @@ public sealed class GrassRenderer : IDisposable
 
     // Material shader keys (bound by name — no generated GrassDiffuseKeys needed).
     private static readonly ValueParameterKey<float> KeyGrassColorScale = ParameterKeys.NewValue<float>(1f, "GrassDiffuse.GrassColorScale");
-    private static readonly ValueParameterKey<float> KeyWindStrength    = ParameterKeys.NewValue<float>(0.15f, "GrassWind.WindStrength");
-    private static readonly ValueParameterKey<float> KeyWindSpeed       = ParameterKeys.NewValue<float>(1.5f, "GrassWind.WindSpeed");
-    private static readonly ValueParameterKey<float> KeyWindFrequency   = ParameterKeys.NewValue<float>(0.8f, "GrassWind.WindFrequency");
+    private static readonly ValueParameterKey<float> KeyWindTime        = ParameterKeys.NewValue<float>(0f, "GrassCull.WindTime");
+    private static readonly ValueParameterKey<float> KeyWindStrength    = ParameterKeys.NewValue<float>(0.15f, "GrassCull.WindStrength");
+    private static readonly ValueParameterKey<float> KeyWindSpeed       = ParameterKeys.NewValue<float>(1.5f, "GrassCull.WindSpeed");
+    private static readonly ValueParameterKey<float> KeyWindFrequency   = ParameterKeys.NewValue<float>(0.8f, "GrassCull.WindFrequency");
 
     // LOD / distance settings.
     private float _lodMultiplier = 1.0f;
@@ -146,6 +147,7 @@ public sealed class GrassRenderer : IDisposable
     private GpuBuffer?           _trampleSourceBuffer;
     private readonly TrampleSource[] _trampleSourceStaging = new TrampleSource[MaxTrampleSources];
     private int                  _trampleSourceCount;
+    private float                _trampleDecayCarry;
     private ComputeEffectShader? _trampleShader;
     private Vector2              _trampleOriginWorld;
     private Int2                 _trampleOffset;
@@ -195,13 +197,9 @@ public sealed class GrassRenderer : IDisposable
             {
                 Diffuse = new MaterialDiffuseMapFeature(grassColor),
                 DiffuseModel = new MaterialDiffuseLambertModelFeature(),
-                Displacement = new MaterialDisplacementMapFeature(
-                    new ComputeShaderClassScalar { MixinReference = "GrassWind" })
-                {
-                    Stage = DisplacementMapStage.Vertex,
-                    ScaleAndBias = false,
-                    Intensity = new ComputeFloat(1.0f),
-                },
+                // Wind sway lives in the GrassCull compute shader (blade matrices), NOT in a
+                // material displacement feature: material-stage Global.Time never advanced for
+                // this hand-built material, leaving the displacement path frozen.
                 Transparency = new MaterialTransparencyCutoffFeature
                 {
                     Alpha = new ComputeFloat(0.3f),
@@ -211,9 +209,6 @@ public sealed class GrassRenderer : IDisposable
         _material = Material.New(graphicsDevice, descriptor);
         _material.Passes[0].CullMode = CullMode.None;
         _material.Passes[0].Parameters.Set(KeyGrassColorScale, 1.0f);
-        _material.Passes[0].Parameters.Set(KeyWindStrength, 0.15f);
-        _material.Passes[0].Parameters.Set(KeyWindSpeed, 1.5f);
-        _material.Passes[0].Parameters.Set(KeyWindFrequency, 0.8f);
 
         var largeBBox = new BoundingBox(
             new Vector3(-1000f, -500f, -1000f),
@@ -289,12 +284,16 @@ public sealed class GrassRenderer : IDisposable
     /// <summary>Day/night dimming applied to the blade color (1 = day, ~0.25 = night).</summary>
     public void SetColorScale(float scale) => _material.Passes[0].Parameters.Set(KeyGrassColorScale, scale);
 
-    /// <summary>Wind sway parameters (world-space).</summary>
+    private float _windStrength = 0.15f;
+    private float _windSpeed = 1.5f;
+    private float _windFrequency = 0.8f;
+
+    /// <summary>Wind sway parameters (world-space) — consumed by the GrassCull pass each frame.</summary>
     public void SetWind(float strength, float speed, float frequency)
     {
-        _material.Passes[0].Parameters.Set(KeyWindStrength, strength);
-        _material.Passes[0].Parameters.Set(KeyWindSpeed, speed);
-        _material.Passes[0].Parameters.Set(KeyWindFrequency, frequency);
+        _windStrength = strength;
+        _windSpeed = speed;
+        _windFrequency = frequency;
     }
 
     /// <summary>Resize the per-frame instance budget (metres² of dense grass you can afford).</summary>
@@ -415,6 +414,7 @@ public sealed class GrassRenderer : IDisposable
         float dt = (float)game.UpdateTime.Elapsed.TotalSeconds;
         DispatchTrampleUpdate(cameraPosition, dt);
 
+
         // 4. Cull/build pass.
         _cullShader.Parameters.Set(KeySeeds,            _seedBuffer);
         _cullShader.Parameters.Set(KeyOutWorld,         _outWorldBuffer);
@@ -435,6 +435,10 @@ public sealed class GrassRenderer : IDisposable
         _cullShader.Parameters.Set(KeyTrampleTexelSize,   TrampleTexelWorldSize);
         _cullShader.Parameters.Set(KeyTrampleTextureSize, (uint)TrampleTextureSize);
         _cullShader.Parameters.Set(KeyTrampleOffset,      _trampleOffset);
+        _cullShader.Parameters.Set(KeyWindTime,           (float)game.UpdateTime.Total.TotalSeconds);
+        _cullShader.Parameters.Set(KeyWindStrength,       _windStrength);
+        _cullShader.Parameters.Set(KeyWindSpeed,          _windSpeed);
+        _cullShader.Parameters.Set(KeyWindFrequency,      _windFrequency);
 
         int groups = (_liveSeedCount + 63) / 64;
         _cullShader.ThreadGroupCounts = new Int3(groups, 1, 1);
@@ -489,7 +493,16 @@ public sealed class GrassRenderer : IDisposable
                 new ReadOnlySpan<TrampleSource>(_trampleSourceStaging, 0, _trampleSourceCount));
         }
 
-        float decayPerFrame = TrampleDecayPerSecond * MathF.Max(dt, 0.0001f);
+        // The field is an R8 texture (1/255 quantum): above ~130 FPS the per-frame decay
+        // would round back to the same texel value and the trail would never recover.
+        // Carry the sub-quantum remainder across frames and only spend it once it's visible.
+        _trampleDecayCarry += TrampleDecayPerSecond * MathF.Max(dt, 0.0001f);
+        float decayPerFrame = 0f;
+        if (_trampleDecayCarry >= 1f / 255f)
+        {
+            decayPerFrame = _trampleDecayCarry;
+            _trampleDecayCarry = 0f;
+        }
 
         _trampleShader.Parameters.Set(KeyTUField,       _trampleTexture);
         _trampleShader.Parameters.Set(KeyTUSources,     _trampleSourceBuffer);

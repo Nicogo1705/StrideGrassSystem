@@ -46,6 +46,15 @@ shader GrassCull : ComputeShaderBase
     stage float  LodMultiplier;
     stage float  LodExponent;
 
+    // ── Wind (world-space sway, applied to the blade's Y axis) ──────────────
+    // Lives here rather than in a material displacement shader: the blade
+    // matrix is rebuilt every frame anyway, and material-stage Global.Time
+    // proved unreliable for hand-built materials (frozen wind).
+    stage float WindTime;
+    stage float WindStrength;
+    stage float WindSpeed;
+    stage float WindFrequency;
+
     // ── Trample (grass crushed under players / enemies) ─────────────────────
     // Trample field: an R8 texture sampled by world (X, Z). Each texel stores
     // "trample amount" in [0, 1] — 0 = blade upright, 1 = fully crushed. The
@@ -180,13 +189,19 @@ shader GrassCull : ComputeShaderBase
             float tiltCos   = cos(tiltAngle);
             float tiltSin   = sin(tiltAngle);
 
+            // ── Wind: time-varying world-space lean of the Y axis, phased by
+            // the blade's world position so the field ripples instead of
+            // rocking as one. Crushed blades don't sway (× trampleT).
+            float windX = sin(bx * WindFrequency + WindTime * WindSpeed)       * WindStrength * trampleT;
+            float windZ = cos(bz * WindFrequency + WindTime * WindSpeed * 0.7) * WindStrength * trampleT * 0.3;
+
             // Build the matrix. The Y axis (m[1]) is tilted toward
             // (leanX, leanZ) so the blade leans away from the player.
             float4x4 m;
-            m[0] = float4(sx * cosA  * mask,                 0,                       sx * sinA * mask,                 0);
-            m[1] = float4(leanX * sy * tiltSin * mask,       sy * tiltCos * mask,     leanZ * sy * tiltSin * mask,      0);
-            m[2] = float4(-sz * sinA * mask,                 0,                       sz * cosA * mask,                 0);
-            m[3] = float4(bx * mask,                         wy * mask,               bz * mask,                        mask);
+            m[0] = float4(sx * cosA  * mask,                            0,                       sx * sinA * mask,                            0);
+            m[1] = float4((leanX * tiltSin + windX) * sy * mask,        sy * tiltCos * mask,     (leanZ * tiltSin + windZ) * sy * mask,       0);
+            m[2] = float4(-sz * sinA * mask,                            0,                       sz * cosA * mask,                            0);
+            m[3] = float4(bx * mask,                                    wy * mask,               bz * mask,                                   mask);
 
             InstanceTransform t;
             t.Matrix = m;
