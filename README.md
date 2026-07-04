@@ -75,14 +75,15 @@ almost entirely GPU-side.
 | Seeds | Blade instances (× 32) | Avg FPS |
 |---|---|---|
 | 40 000 (100×100 m) | 1.28 M | **~300** |
-| 90 000 (150×150 m) | 2.88 M | 40–140* |
-| 160 000 (200×200 m) | 5.12 M | 15–90* |
+| 90 000 (150×150 m) | 2.88 M | **~140** |
+| 160 000 (200×200 m) | 5.12 M | **~95** |
 
-\* Past ~3 M instances the demo is fully GPU-bound and repeated runs vary widely with the
-GPU's clock/power state — measure on your own scene: **Ctrl+Shift+P** toggles an FPS overlay
-in the demo. The intended pattern for big worlds is **streaming** anyway: keep seeds near
-the camera with `SetChunkSeeds`/`RemoveChunk` instead of feeding the whole map at once —
-instances scale with what's in range, not with the world size.
+Measured with the window focused — Windows throttles background windows hard, so bench with
+the game in the foreground. **Ctrl+Shift+P** toggles Stride's profiler in the demo (F1 cycles
+FPS / CPU / GPU pages) to measure on your own hardware. The intended pattern for big worlds
+is **streaming** anyway: keep seeds near the camera with `SetChunkSeeds`/`RemoveChunk`
+instead of feeding the whole map at once — instances scale with what's in range, not with
+the world size.
 
 ## Demo
 
