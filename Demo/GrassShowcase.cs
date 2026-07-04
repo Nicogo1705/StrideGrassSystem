@@ -2,6 +2,7 @@ using Stride.Core.Mathematics;
 using Stride.Engine;
 using Stride.Graphics;
 using Stride.Input;
+using Stride.Profiling;
 using Stride.Rendering;
 using Stride.Rendering.Materials;
 using Stride.Rendering.Materials.ComputeColors;
@@ -80,24 +81,34 @@ public sealed class GrassShowcase : SyncScript
         _loopLength = AreaSize;
     }
 
-    private bool _showFps;
+    private bool _profilerEnabled;
 
     public override void Update()
     {
         if (_grass == null) return;
         float dt = (float)Game.UpdateTime.Elapsed.TotalSeconds;
 
-        // FPS overlay — Ctrl+Shift+P to toggle.
-        if ((Input.IsKeyDown(Keys.LeftCtrl) || Input.IsKeyDown(Keys.RightCtrl))
-            && (Input.IsKeyDown(Keys.LeftShift) || Input.IsKeyDown(Keys.RightShift))
-            && Input.IsKeyPressed(Keys.P))
+        // Stride's built-in game profiler (works in Release) — Ctrl+Shift+P to toggle,
+        // F1 cycles the pages (FPS / CPU / GPU). Same keys as the official template script.
+        if (Input.IsKeyDown(Keys.LeftShift) && Input.IsKeyDown(Keys.LeftCtrl) && Input.IsKeyReleased(Keys.P))
         {
-            _showFps = !_showFps;
+            if (_profilerEnabled)
+            {
+                GameProfiler.DisableProfiling();
+            }
+            else
+            {
+                GameProfiler.FilteringMode = GameProfilingResults.Fps;
+                GameProfiler.EnableProfiling();
+            }
+
+            _profilerEnabled = !_profilerEnabled;
         }
 
-        if (_showFps)
+        if (_profilerEnabled && Input.IsKeyPressed(Keys.F1))
         {
-            DebugText.Print($"{Game.UpdateTime.FramePerSecond:F0} FPS", new Int2(12, 12));
+            GameProfiler.FilteringMode = (GameProfilingResults)(((int)GameProfiler.FilteringMode + 1)
+                % Enum.GetValues(typeof(GameProfilingResults)).Length);
         }
 
         // Roll the ball across the field (downhill along -X), looping.
