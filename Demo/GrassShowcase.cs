@@ -1,6 +1,7 @@
 using Stride.Core.Mathematics;
 using Stride.Engine;
 using Stride.Graphics;
+using Stride.Input;
 using Stride.Rendering;
 using Stride.Rendering.Materials;
 using Stride.Rendering.Materials.ComputeColors;
@@ -79,10 +80,25 @@ public sealed class GrassShowcase : SyncScript
         _loopLength = AreaSize;
     }
 
+    private bool _showFps;
+
     public override void Update()
     {
         if (_grass == null) return;
         float dt = (float)Game.UpdateTime.Elapsed.TotalSeconds;
+
+        // FPS overlay — Ctrl+Shift+P to toggle.
+        if ((Input.IsKeyDown(Keys.LeftCtrl) || Input.IsKeyDown(Keys.RightCtrl))
+            && (Input.IsKeyDown(Keys.LeftShift) || Input.IsKeyDown(Keys.RightShift))
+            && Input.IsKeyPressed(Keys.P))
+        {
+            _showFps = !_showFps;
+        }
+
+        if (_showFps)
+        {
+            DebugText.Print($"{Game.UpdateTime.FramePerSecond:F0} FPS", new Int2(12, 12));
+        }
 
         // Roll the ball across the field (downhill along -X), looping.
         _ballDist += BallSpeed * dt;
