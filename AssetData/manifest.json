@@ -8,7 +8,7 @@
   "tags": ["grass", "foliage", "vegetation", "gpu", "compute-shader", "instancing", "wind", "sdsl"],
   "license": "MIT",
   "thumbnail": "thumbnail.png",
-  "media": ["media/screenshot.png"],
+  "media": ["media/trample-chase.mp4", "media/wind-closeup.mp4", "media/field-orbit.mp4", "media/screenshot.png"],
   "dependencies": [],
   "defaultImport": "local"
 }
